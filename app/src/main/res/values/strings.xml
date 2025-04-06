@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Don\'t Press App</string>
+    <string name="dont_press">don\'t press</string>
+    <string name="said_dont_press">i said don\'t press</string>
+</resources> 
