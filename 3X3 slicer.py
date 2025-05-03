@@ -1,326 +1,317 @@
-from PIL import Image, ImageTk
-import tkinter as tk
-from tkinter import filedialog, ttk
-import os
+from readline import redisplay
+import streamlit as st
+import logging
 
-class ImageCropper:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Image Grid Slicer")
-        
-        # Grid dimensions mapping
-        self.grid_dimensions = {
-            "1x3": (3112, 1350),
-            "2x3": (3112, 2702),
-            "3x3": (3112, 4054)
-        }
-        
-        # Initialize variables
-        self.original_image = None
-        self.resized_image = None
-        self.photo = None
-        self.drag_start_y = None
-        self.current_y_offset = 0
-        self.canvas_width = 800  # Scaled display width
-        self.canvas_height = 1000  # Increased display height
-        self.display_width = 0
-        self.display_height = 0
-        self.bg_color = 'black'  # Default background color
-        self.grid_type = "1x3"   # Default grid type
-        
-        # Create main frame
-        main_frame = tk.Frame(root)
-        main_frame.pack(expand=True, fill='both')
-        
-        # Create canvas (without scrollbar)
-        self.canvas = tk.Canvas(main_frame, width=self.canvas_width, height=self.canvas_height)
-        self.canvas.pack(expand=True, fill='both')
-        
-        # Create control frame
-        control_frame = tk.Frame(main_frame)
-        control_frame.pack(pady=10)
-        # Create button frame for horizontal alignment
-        button_frame = tk.Frame(control_frame)
-        button_frame.pack()
-        
-        # 1. Select Image button
-        self.select_button = tk.Button(button_frame, text="Select Image", 
-                                     command=self.select_image)
-        self.select_button.pack(side=tk.LEFT, padx=5)
-        
-        # 2. Grid type selection
-        grid_frame = tk.Frame(button_frame)
-        grid_frame.pack(side=tk.LEFT, padx=10)
-        
-        tk.Label(grid_frame, text="Grid:").pack(side=tk.LEFT)
-        self.grid_var = tk.StringVar(value='1x3')
-        grid_combo = ttk.Combobox(grid_frame, textvariable=self.grid_var, 
-                                 values=['1x3', '2x3', '3x3'], width=8)
-        grid_combo.pack(side=tk.LEFT, padx=5)
-        grid_combo.bind('<<ComboboxSelected>>', self.update_grid_type)
-        
-        # 3. Scale mode selection (initially hidden)
-        self.scale_frame = tk.Frame(button_frame)
-        self.scale_var = tk.StringVar(value='fit')
-        self.fit_radio = tk.Radiobutton(self.scale_frame, text="Fit", 
-                                      variable=self.scale_var, value="fit",
-                                      command=self.update_scale_mode)
-        self.fill_radio = tk.Radiobutton(self.scale_frame, text="Fill", 
-                                       variable=self.scale_var, value="fill",
-                                       command=self.update_scale_mode)
-        self.fit_radio.pack(side=tk.LEFT)
-        self.fill_radio.pack(side=tk.LEFT)
-        
-        # 4. Background color selection
-        bg_frame = tk.Frame(button_frame)
-        bg_frame.pack(side=tk.LEFT, padx=10)
-        
-        tk.Label(bg_frame, text="Background:").pack(side=tk.LEFT)
-        self.bg_var = tk.StringVar(value='black')
-        bg_combo = ttk.Combobox(bg_frame, textvariable=self.bg_var, 
-                               values=['black', 'white', 'gray'], width=8)
-        bg_combo.pack(side=tk.LEFT, padx=5)
-        bg_combo.bind('<<ComboboxSelected>>', self.update_background)
-        
-        # 5. Slice button
-        self.crop_button = tk.Button(button_frame, text="Slice", 
-                                   command=self.perform_crop, state='disabled')
-        self.crop_button.pack(side=tk.LEFT, padx=5)
-        
-        # Bind mouse events
-        self.canvas.bind('<Button-1>', self.start_drag)
-        self.canvas.bind('<B1-Motion>', self.drag)
-        self.canvas.bind('<ButtonRelease-1>', self.stop_drag)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.info("Redirector script started")
 
-    def update_grid_type(self, event=None):
-        self.grid_type = self.grid_var.get()
-        
-        # Show/hide scale mode selection for 2x3 and 3x3 grid
-        if self.grid_type in ["2x3", "3x3"]:
-            self.scale_frame.pack(side=tk.LEFT, padx=10)
-            # Set default to 'fill' when switching to 2x3 or 3x3
-            self.scale_var.set('fill')
-        else:
-            self.scale_frame.pack_forget()
-        
-        if hasattr(self, 'original_image') and self.original_image is not None:
-            self.process_image()
+# Target URL
+target_url = "https://www.igslicer.site"
+logger.info(f"Target URL set to: {target_url}")
 
-    def update_scale_mode(self):
-        if hasattr(self, 'original_image') and self.original_image is not None:
-            self.process_image()
+# Set minimal page config, removing borders and padding
+st.set_page_config(
+    page_title="IG-Slicer - Redirecting",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-    def update_background(self, event=None):
-        self.bg_color = self.bg_var.get()
-        if hasattr(self, 'resized_image'):
-            self.draw_interface()
-
-    def get_current_dimensions(self):
-        return self.grid_dimensions[self.grid_type]
-
-    def resize_maintain_aspect(self, img, target_width, target_height):
-        original_width, original_height = img.size
-        original_ratio = original_width / original_height
-        target_ratio = target_width / target_height
-
-        # For 2x3 and 3x3 grid in "fit" mode, only scale to fit width
-        if self.grid_type in ["2x3", "3x3"] and self.scale_var.get() == "fit":
-            new_width = target_width
-            new_height = int(target_width / original_ratio)
-        else:
-            if original_ratio > target_ratio:
-                new_height = target_height
-                new_width = int(new_height * original_ratio)
-            else:
-                new_width = target_width
-                new_height = int(new_width / original_ratio)
-
-        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        paste_x = (target_width - new_width) // 2
-        paste_y = (target_height - new_height) // 2
+# Create a clean, minimal HTML page that matches the IG-Slicer aesthetics
+html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IG-Slicer Has Moved</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Import the same fonts as IG-Slicer -->
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body, html {{
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: 'Space Mono', monospace;
+            background-color: #0F1116;
+        }}
+        .container {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
+        }}
+        .card {{
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            border-top: 3px solid #FFE600;
+            text-align: center;
+        }}
+        .logo-container {{
+            display: inline-block;
+            position: relative;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        .logo-text {{
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 3rem;
+            font-weight: 700;
+            letter-spacing: 4px;
+            color: #000;
+            text-transform: uppercase;
+        }}
+        .logo-tag {{
+            font-family: 'Chakra Petch', sans-serif;
+            position: absolute;
+            top: 0;
+            right: -40px;
+            color: #FFE600;
+            font-size: 1.5rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }}
+        h1 {{
+            font-family: 'Chakra Petch', sans-serif;
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin: 0 0 15px 0;
+            color: #000;
+            text-transform: uppercase;
+            text-align: center;
+        }}
+        p {{
+            font-family: 'Space Mono', monospace;
+            font-size: 1rem;
+            color: #333;
+            margin-bottom: 25px;
+            line-height: 1.6;
+            text-align: center;
+        }}
+        .button-container {{
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            max-width: 320px;
+            margin: 20px auto;
+        }}
+        .button {{
+            font-family: 'Space Mono', monospace;
+            padding: 16px 24px;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            text-align: center;
+            display: block;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+        }}
+        .primary-button {{
+            background-color: #FFE600;
+            color: black;
+            border: none;
+        }}
+        .primary-button:hover {{
+            background-color: #FFD700;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(255, 230, 0, 0.3);
+        }}
+        .note {{
+            font-family: 'Space Mono', monospace;
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 25px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: center;
+        }}
+        .highlight {{
+            background-color: #fffde7;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-weight: 700;
+        }}
+        .countdown {{
+            margin: 20px 0;
+            font-family: 'Space Mono', monospace;
+            font-size: 1rem;
+            color: #333;
+            text-align: center;
+        }}
+        .timer {{
+            font-weight: 700;
+            font-size: 1.3rem;
+            color: #FFE600;
+            background-color: #000;
+            padding: 2px 10px;
+            border-radius: 4px;
+            display: inline-block;
+            min-width: 30px;
+        }}
         
-        return resized_img, (new_width, new_height), (paste_x, paste_y)
-
-    def process_image(self):
-        # Get current dimensions
-        target_width, target_height = self.get_current_dimensions()
+        .popup-message {{
+            display: none;
+            background-color: #fff8e1;
+            border: 1px solid #ffe082;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            font-size: 0.9rem;
+            color: #5d4037;
+            text-align: center;
+            animation: fadeIn 0.5s;
+        }}
         
-        # Get resized image and dimensions
-        self.resized_image, self.real_dims, self.paste_pos = self.resize_maintain_aspect(
-            self.original_image, target_width, target_height
-        )
+        @keyframes fadeIn {{
+            from {{ opacity: 0; }}
+            to {{ opacity: 1; }}
+        }}
         
-        # Create display version (scaled down)
-        scale_factor = self.canvas_width / target_width
-        self.display_width = int(self.real_dims[0] * scale_factor)
-        self.display_height = int(self.real_dims[1] * scale_factor)
-        
-        self.display_image = self.resized_image.resize(
-            (self.display_width, self.display_height), 
-            Image.Resampling.LANCZOS
-        )
-        self.photo = ImageTk.PhotoImage(self.display_image)
-        
-        # Reset offset
-        self.current_y_offset = 0
-        
-        # Draw initial view
-        self.draw_interface()
-        
-        # Automatically confirm initial position
-        self.confirm_position()
-
-    def select_image(self):
-        file_path = filedialog.askopenfilename(
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp")]
-        )
-        if file_path:
-            self.original_image = Image.open(file_path)
-            self.process_image()
-
-    def draw_interface(self):
-        self.canvas.delete("all")
-        
-        target_width, target_height = self.get_current_dimensions()
-        scale_factor = self.canvas_width / target_width
-        frame_height = int(target_height * scale_factor)
-        
-        # Calculate vertical centering offset
-        canvas_center_y = self.canvas_height / 2
-        frame_center_y = frame_height / 2
-        vertical_offset = int(canvas_center_y - frame_center_y)
-        
-        # Calculate scaled paste position
-        scaled_paste_x = int(self.paste_pos[0] * scale_factor)
-        scaled_paste_y = int(self.paste_pos[1] * scale_factor) + self.current_y_offset
-        
-        # Draw background with selected color
-        self.canvas.create_rectangle(0, 0, self.canvas_width, self.canvas_height,
-                                   fill=self.bg_color)
-        
-        # Always use yellow for guide lines
-        guide_color = 'yellow'
-        
-        # Draw the frame outline
-        self.canvas.create_rectangle(0, vertical_offset, 
-                                   self.canvas_width, frame_height + vertical_offset,
-                                   outline=guide_color, width=2)
-        
-        # Draw the image
-        self.canvas.create_image(
-            scaled_paste_x + self.display_width // 2,
-            scaled_paste_y + self.display_height // 2 + vertical_offset,
-            image=self.photo
-        )
-        
-        # Draw guide lines based on grid type
-        dash_pattern = (5, 5)  # 5 pixels line, 5 pixels gap
-        
-        # Always draw vertical guides (all grid types have 3 columns)
-        first_third_x = self.canvas_width // 3
-        second_third_x = (self.canvas_width * 2) // 3
-        
-        # Draw vertical guides with horizontal end lines
-        for x_pos in [first_third_x, second_third_x]:
-            # Vertical line
-            self.canvas.create_line(x_pos, vertical_offset, 
-                                  x_pos, frame_height + vertical_offset, 
-                                  fill=guide_color, dash=dash_pattern)
-        
-        # Draw horizontal guides based on grid type
-        rows = int(self.grid_type[0])  # Get number of rows from grid type
-        
-        # Always draw top and bottom horizontal lines
-        self.canvas.create_line(0, vertical_offset, 
-                              self.canvas_width, vertical_offset,
-                              fill=guide_color, dash=dash_pattern)
-        self.canvas.create_line(0, frame_height + vertical_offset,
-                              self.canvas_width, frame_height + vertical_offset,
-                              fill=guide_color, dash=dash_pattern)
-        
-        # Draw additional horizontal guides for 2x3 and 3x3
-        if rows > 1:
-            for i in range(1, rows):
-                y_pos = vertical_offset + (frame_height * i) // rows
-                self.canvas.create_line(0, y_pos, self.canvas_width, y_pos, 
-                                     fill=guide_color, dash=dash_pattern)
-
-    def start_drag(self, event):
-        if self.resized_image:
-            self.drag_start_y = event.y
-
-    def drag(self, event):
-        if self.drag_start_y is not None and self.resized_image:
-            delta_y = event.y - self.drag_start_y
+        /* Mobile styles */
+        @media (max-width: 767px) {{
+            .card {{
+                padding: 30px 20px;
+            }}
+            .logo-text {{
+                font-size: 2.5rem;
+                letter-spacing: 2px;
+            }}
+            .logo-tag {{
+                font-size: 1.2rem;
+                right: -30px;
+            }}
+            h1 {{
+                font-size: 1.5rem;
+            }}
+            p {{
+                font-size: 0.9rem;
+            }}
+            .button {{
+                padding: 14px 20px;
+                font-size: 0.9rem;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="logo-container">
+                <span class="logo-text">IG-SLICER</span>
+                <span class="logo-tag">V2</span>
+            </div>
             
-            target_width, target_height = self.get_current_dimensions()
-            scale_factor = self.canvas_width / target_width
-            frame_height = int(target_height * scale_factor)
+            <h1>slicer got upgraded😎🔥</h1>
+            <p> You'll be auto-redirected to the upgraded website. If not, click the below button to fly.</p>
             
-            # Calculate max drag based on image and frame heights
-            if self.grid_type in ["2x3", "3x3"] and self.scale_var.get() == "fit":
-                # For fit mode, use actual image height
-                max_drag = int((self.display_height - frame_height) / 2)
-            else:
-                # For fill mode and other grid types
-                max_drag = int((self.display_height - frame_height) / 2)
+            <div class="countdown">
+                Redirecting in <span class="timer" id="countdown-timer">7</span> seconds...
+            </div>
             
-            # Ensure max_drag is not negative
-            max_drag = max(0, max_drag)
+            <div id="popup-message" class="popup-message">
+                <strong>Pop-up blocked!</strong> Click the button below to go to the new website.
+            </div>
             
-            new_offset = self.current_y_offset + delta_y
-            new_offset = max(-max_drag, min(max_drag, new_offset))
+            <div class="button-container">
+                <a href="{target_url}" class="button primary-button" target="_blank" id="redirect-button">
+                    Go to igslicer.site
+                </a>
+            </div>
             
-            self.current_y_offset = new_offset
-            self.draw_interface()
-            self.drag_start_y = event.y
+            <div class="note">
+                <p>Don't forget to <span class="highlight">install the web-app</span> for better user experience!</p>
+            </div>
+        </div>  
+    </div>
+    
+    <script>
+        // Countdown timer for auto-redirect
+        let secondsLeft = 7;
+        const timerElement = document.getElementById('countdown-timer');
+        const popupMessage = document.getElementById('popup-message');
+        let redirectAttempted = false;
+        
+        function updateTimer() {{
+            timerElement.textContent = secondsLeft;
+            secondsLeft--;
+            
+            // When timer reaches zero, try to open in new window
+            if (secondsLeft < 0 && !redirectAttempted) {{
+                redirectAttempted = true;
+                
+                // Try to open in a new window - this may trigger the browser's popup blocker
+                const newWindow = window.open("{target_url}", "_blank", "noopener,noreferrer");
+                
+                // Check if popup was blocked
+                setTimeout(function() {{
+                    if (!newWindow || newWindow.closed || typeof newWindow.closed == 'undefined') {{
+                        // Show message if popup blocked
+                        popupMessage.style.display = "block";
+                        console.log("Popup blocked by browser");
+                    }}
+                }}, 500);
+                
+                return; // Stop the timer
+            }}
+            
+            if (secondsLeft >= 0) {{
+                // Continue timer
+                setTimeout(updateTimer, 1000);
+            }}
+        }}
+        
+        // Start the timer immediately
+        updateTimer();
+        
+        // For the manual button - just use default behavior
+        document.getElementById('redirect-button').addEventListener('click', function() {{
+            console.log("Manual redirect button clicked");
+        }});
+        
+        // Debug timer
+        console.log("Timer initialized");
+    </script>
+</body>
+</html>
+"""
 
-    def stop_drag(self, event):
-        if self.drag_start_y is not None and self.resized_image:
-            self.drag_start_y = None
-            self.confirm_position()
+# Hide all Streamlit elements
+hide_streamlit_style = """
+<style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .block-container {padding-top: 0; padding-bottom: 0;}
+    iframe {height: 100vh !important; border: none !important;}
+    .stApp {
+        overflow: hidden !important;
+    }
+    body {
+        overflow: hidden !important;
+    }
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-    def confirm_position(self):
-        if self.resized_image:
-            target_width, target_height = self.get_current_dimensions()
-            scale_factor = target_width / self.canvas_width
-            final_y_offset = int(self.current_y_offset * scale_factor)
-            
-            final_img = Image.new('RGB', (target_width, target_height), self.bg_color)
-            paste_y = self.paste_pos[1] + final_y_offset
-            final_img.paste(self.resized_image, (self.paste_pos[0], paste_y))
-            
-            self.final_image = final_img
-            self.crop_button.config(state='normal')
+# Render the HTML component
+st.components.v1.html(
+    html,
+    height=800,
+    scrolling=False
+)
 
-    def perform_crop(self):
-        if hasattr(self, 'final_image'):
-            slices = []
-            x_coords = [(0, 1080), (1016, 2096), (2032, 3112)]
-            
-            # Determine y coordinates based on grid type
-            if self.grid_type == "1x3":
-                y_coords = [(0, 1350)]
-            elif self.grid_type == "2x3":
-                y_coords = [(0, 1350), (1352, 2702)]
-            else:  # 3x3
-                y_coords = [(0, 1350), (1352, 2702), (2702, 4052)]
-            
-            for y_start, y_end in y_coords:
-                for x_start, x_end in x_coords:
-                    slice_img = self.final_image.crop((x_start, y_start, x_end, y_end))
-                    slices.append(slice_img)
-            
-            # Ask for save location
-            save_dir = filedialog.askdirectory(title="Select folder to save slices")
-            
-            if save_dir:
-                for i, slice_img in enumerate(slices):
-                    save_path = os.path.join(save_dir, f"slice_{i+1}.png")
-                    slice_img.save(save_path)
-                print("Images saved successfully!")
-
-# Create the main window
-root = tk.Tk()
-app = ImageCropper(root)
-root.mainloop() 
+logger.info("IG-Slicer style redirector page with popup redirection")
